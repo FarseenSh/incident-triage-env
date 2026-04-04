@@ -16,10 +16,29 @@ tags:
 > **Train AI agents to diagnose and fix production outages like expert SREs.**
 
 [![OpenEnv Compatible](https://img.shields.io/badge/OpenEnv-Compatible-blue)](https://github.com/meta-pytorch/OpenEnv)
+[![Validation](https://img.shields.io/badge/openenv_validate-6%2F6_passed-brightgreen)]()
 [![Tasks](https://img.shields.io/badge/Tasks-5-green)]()
-[![License](https://img.shields.io/badge/License-BSD--3--Clause-orange)]()
+[![Models Tested](https://img.shields.io/badge/Baselines-3_models-purple)]()
+[![HF Space](https://img.shields.io/badge/HF_Space-Running-yellow)](https://huggingface.co/spaces/Farseen0/incident-triage-env)
 
 An OpenEnv-compatible RL environment where AI agents investigate alerts, trace dependency chains, identify root causes, and remediate simulated production incidents across an 8-service microservice architecture.
+
+### How an Episode Works
+
+```
+Agent receives incident briefing + initial alerts
+  │
+  ├─→ get_alerts()           → See what's firing
+  ├─→ read_logs(service)     → Read service logs for clues  
+  ├─→ check_metrics(service) → Check CPU, memory, latency, error rates
+  ├─→ get_service_topology() → Understand dependency chain
+  │
+  ├─→ set_severity("P1")    → Classify the incident
+  ├─→ diagnose(service, category) → Identify root cause
+  ├─→ remediate(action, target)   → Apply the fix
+  │
+  └─→ submit_report()       → End episode → Get reward (0.0 - 1.0)
+```
 
 ---
 
@@ -164,6 +183,23 @@ asyncio.run(main())
 | Max steps exhausted (20) | -0.10 | Episode forced termination |
 
 **Total** = terminal + investigation + penalty, clamped to [0.0, 1.0]
+
+---
+
+## Validation
+
+```
+$ openenv validate --url https://Farseen0-incident-triage-env.hf.space
+
+  [PASS] openapi_version_available
+  [PASS] health_endpoint  
+  [PASS] metadata_endpoint
+  [PASS] schema_endpoint (action + observation + state)
+  [PASS] mcp_endpoint (JSON-RPC 2.0)
+  [PASS] mode_endpoint_consistency (/reset, /step, /state)
+  
+  Result: 6/6 passed
+```
 
 ---
 
