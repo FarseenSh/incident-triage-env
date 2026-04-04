@@ -1,15 +1,3 @@
----
-title: Incident Triage Environment Server
-emoji: 🚨
-colorFrom: red
-colorTo: yellow
-sdk: docker
-pinned: false
-app_port: 8000
-base_path: /web
-tags:
-  - openenv
----
 
 # Incident Response Triage Environment
 
