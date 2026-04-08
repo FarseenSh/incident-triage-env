@@ -33,7 +33,7 @@ def _env_factory():
 
 app = create_app(
     _env_factory,
-    TriageCallToolAction,   # NOT plain CallToolAction — handles JSON string args
+    CallToolAction,         # Must be CallToolAction (not subclass) for MCP deserialization
     CallToolObservation,
     env_name="incident_triage_env",
     max_concurrent_envs=4,
