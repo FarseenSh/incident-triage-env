@@ -295,10 +295,9 @@ class IncidentTriageEnvironment(MCPEnvironment):
                 },
             )
 
-        # Non-terminal: return original observation UNCHANGED.
-        # This preserves the actual tool result (log text, metrics JSON, etc.)
-        # so the agent can see what it requested. Without this, the agent is blind.
-        # Investigation reward accumulates internally and surfaces in terminal score.
+        # Non-terminal: preserve tool result but ensure reward is in (0, 1)
+        if hasattr(obs, 'reward'):
+            obs.reward = 0.01
         return obs
 
     # ── step() — sync path ────────────────────────────────────────
