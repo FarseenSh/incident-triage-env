@@ -194,7 +194,8 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
             step_result = await env.step(action)
             obs = step_result.observation
 
-            reward = obs.reward or 0.0
+            reward = obs.reward if obs.reward is not None else 0.01
+            reward = max(0.01, min(0.99, reward))  # Strict (0, 1)
             done = obs.done or False
             rewards.append(reward)
             steps_taken = step
@@ -206,16 +207,18 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
                 messages.append({"role": "tool", "tool_call_id": tool_call_id,
                                "content": result_text[:2000]})
 
-        # Compute final score
-        final_reward = rewards[-1] if rewards else 0.0
-        score = final_reward  # Terminal reward is the score
+        # Compute final score — must be strictly in (0, 1)
+        final_reward = rewards[-1] if rewards else 0.01
+        score = max(0.01, min(0.99, final_reward))
         success = score >= 0.5
 
-        return {"task": task_name, "reward": final_reward, "steps": steps_taken, "metadata": getattr(obs, "metadata", {})}
+        return {"task": task_name, "reward": score, "steps": steps_taken, "metadata": getattr(obs, "metadata", {})}
 
     finally:
-        log_end(success=success, steps=steps_taken, score=score if 'score' in dir() else 0.0,
-                rewards=rewards)
+        safe_score = max(0.01, min(0.99, score if 'score' in dir() else 0.01))
+        safe_rewards = [max(0.01, min(0.99, r)) for r in rewards]
+        log_end(success=success, steps=steps_taken, score=safe_score,
+                rewards=safe_rewards)
 
 
 async def main_async(base_url: str, preset: str = None, run_all: bool = False):
