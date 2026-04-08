@@ -74,9 +74,9 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
     print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
 
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+def log_end(success: bool, steps: int, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+    print(f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}", flush=True)
 
 
 # ─── Tool conversion ─────────────────────────────────────
@@ -194,8 +194,7 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
             step_result = await env.step(action)
             obs = step_result.observation
 
-            reward = obs.reward if obs.reward is not None else 0.01
-            reward = max(0.01, min(0.99, reward))  # Strict (0, 1)
+            reward = obs.reward if obs.reward is not None else 0.00
             done = obs.done or False
             rewards.append(reward)
             steps_taken = step
@@ -207,18 +206,15 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
                 messages.append({"role": "tool", "tool_call_id": tool_call_id,
                                "content": result_text[:2000]})
 
-        # Compute final score — must be strictly in (0, 1)
+        # Final score is the terminal reward from environment (already clamped to 0.01-0.99)
         final_reward = rewards[-1] if rewards else 0.01
-        score = max(0.01, min(0.99, final_reward))
+        score = final_reward
         success = score >= 0.5
 
         return {"task": task_name, "reward": score, "steps": steps_taken, "metadata": getattr(obs, "metadata", {})}
 
     finally:
-        safe_score = max(0.01, min(0.99, score if 'score' in dir() else 0.01))
-        safe_rewards = [max(0.01, min(0.99, r)) for r in rewards]
-        log_end(success=success, steps=steps_taken, score=safe_score,
-                rewards=safe_rewards)
+        log_end(success=success, steps=steps_taken, rewards=rewards)
 
 
 async def main_async(base_url: str, preset: str = None, run_all: bool = False):
