@@ -266,7 +266,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
                 )
                 return Observation(
                     done=True,
-                    reward=round(total_reward, 4),
+                    reward=round(total_reward, 2),
                     metadata={
                         "terminal_reward": round(terminal_reward, 4),
                         "investigation_reward": round(self._state.investigation_reward, 4),
@@ -292,7 +292,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
             logger.info(f"Episode {self._state.episode_id} terminated: max steps reached")
             return Observation(
                 done=True,
-                reward=round(total_reward, 4),
+                reward=round(total_reward, 2),
                 metadata={
                     "error": f"Max steps ({MAX_STEPS}) reached.",
                     "terminal_reward": round(terminal_reward, 4),
