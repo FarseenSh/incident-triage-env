@@ -24,8 +24,8 @@ def _safe_reward(value: float) -> float:
     """Clamp reward to open interval (0, 1) — never exactly 0.0 or 1.0.
     Phase 2 validation requires strictly between 0 and 1."""
     if value is None:
-        return 0.01
-    return max(0.01, min(0.99, float(value)))
+        return 0.02
+    return max(0.02, min(0.98, float(value)))
 
 
 class IncidentTriageEnvironment(MCPEnvironment):

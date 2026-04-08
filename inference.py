@@ -74,9 +74,11 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
     print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
 
 
-def log_end(success: bool, steps: int, rewards: List[float]) -> None:
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}", flush=True)
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    safe_score = max(0.02, min(0.98, score))
+    safe_rewards = [max(0.02, min(0.98, r)) for r in rewards] if rewards else [0.02]
+    rewards_str = ",".join(f"{r:.2f}" for r in safe_rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} score={safe_score:.2f} rewards={rewards_str}", flush=True)
 
 
 # ─── Tool conversion ─────────────────────────────────────
@@ -112,6 +114,7 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
     rewards: List[float] = []
     steps_taken = 0
     success = False
+    score = 0.02  # Safe default — overridden in try/except
 
     log_start(task=task_name, model=model_name)
 
@@ -127,7 +130,7 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
             alert_result = await env.step(CallToolAction(tool_name="get_alerts", arguments={}))
             alert_obs = alert_result.observation
             alerts = str(alert_obs.result if hasattr(alert_obs, "result") else "")
-            reward = max(0.01, min(0.99, alert_obs.reward or 0.01))
+            reward = max(0.02, min(0.98, alert_obs.reward or 0.02))
             done = alert_obs.done or False
             rewards.append(reward)
             steps_taken = 1
@@ -194,7 +197,7 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
             step_result = await env.step(action)
             obs = step_result.observation
 
-            reward = max(0.01, min(0.99, obs.reward if obs.reward is not None else 0.01))
+            reward = max(0.02, min(0.98, obs.reward if obs.reward is not None else 0.02))
             done = obs.done or False
             rewards.append(reward)
             steps_taken = step
@@ -208,21 +211,22 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
 
         # Final score — always strictly in (0, 1)
         final_reward = rewards[-1] if rewards else 0.01
-        score = max(0.01, min(0.99, final_reward))
+        score = max(0.02, min(0.98, final_reward))
         success = score >= 0.5
 
         return {"task": task_name, "reward": score, "steps": steps_taken, "metadata": getattr(obs, "metadata", {})}
 
     except Exception as e:
         # Even on crash, emit valid [END] with score in (0, 1)
-        score = 0.01
+        score = 0.02
         success = False
         print(f"[DEBUG] Episode error: {e}", flush=True)
-        return {"task": task_name, "reward": 0.01, "steps": steps_taken, "metadata": {}}
+        return {"task": task_name, "reward": 0.02, "steps": steps_taken, "metadata": {}}
 
     finally:
-        safe_rewards = [max(0.01, min(0.99, r)) for r in rewards] if rewards else [0.01]
-        log_end(success=success, steps=steps_taken, rewards=safe_rewards)
+        # score is always set: either in try (line 213) or except (line 220)
+        final_score = max(0.02, min(0.98, score))
+        log_end(success=success, steps=steps_taken, score=final_score, rewards=rewards)
 
 
 async def main_async(base_url: str):
@@ -247,7 +251,7 @@ async def main_async(base_url: str):
                     result = await run_episode(env, llm_client, tools, task, model)
                 except Exception as e:
                     print(f"[DEBUG] Task {task} failed: {e}", flush=True)
-                    result = {"task": task, "reward": 0.01, "steps": 0, "metadata": {}}
+                    result = {"task": task, "reward": 0.02, "steps": 0, "metadata": {}}
                 results.append(result)
 
             # Summary
