@@ -184,7 +184,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
 
         return Observation(
             done=False,
-            reward=0.0,
+            reward=0.01,
             metadata={
                 "task_name": task_name,
                 "all_task_names": TASK_NAMES,  # Validators enumerate tasks from this
@@ -218,7 +218,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
         """Handle non-MCP actions. Returns error since this env is MCP-only."""
         return Observation(
             done=False,
-            reward=0.0,
+            reward=0.01,
             metadata={
                 "error": f"Unknown action type: {type(action).__name__}. "
                 "Use ListToolsAction or CallToolAction for MCP interactions."
