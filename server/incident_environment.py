@@ -313,8 +313,10 @@ class IncidentTriageEnvironment(MCPEnvironment):
         if isinstance(action, CallToolAction):
             self._state.step_count += 1
         obs = super().step(action, timeout_s=timeout_s, **kwargs)
-        # ListToolsAction: pass through unchanged, no custom logic
+        # ListToolsAction: pass through but ensure reward is in (0, 1)
         if not isinstance(action, CallToolAction):
+            if hasattr(obs, 'reward'):
+                obs.reward = 0.01
             return obs
         return self._process_step_result(action, obs)
 
@@ -334,6 +336,8 @@ class IncidentTriageEnvironment(MCPEnvironment):
             self._state.step_count += 1
         obs = await super().step_async(action, timeout_s=timeout_s, **kwargs)
         if not isinstance(action, CallToolAction):
+            if hasattr(obs, 'reward'):
+                obs.reward = 0.01
             return obs
         return self._process_step_result(action, obs)
 
