@@ -231,6 +231,10 @@ class IncidentTriageEnvironment(MCPEnvironment):
         self, action: Action, obs: Observation
     ) -> Observation:
         """Shared logic for processing a step result. Called by both step() and step_async()."""
+        if self._current_scenario is None:
+            if hasattr(obs, 'reward'):
+                obs.reward = 0.01
+            return obs
         gt = self._current_scenario.get_ground_truth()
         step_reward = 0.0
 
