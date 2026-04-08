@@ -127,7 +127,7 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
             alert_result = await env.step(CallToolAction(tool_name="get_alerts", arguments={}))
             alert_obs = alert_result.observation
             alerts = str(alert_obs.result if hasattr(alert_obs, "result") else "")
-            reward = alert_obs.reward or 0.0
+            reward = max(0.01, min(0.99, alert_obs.reward or 0.01))
             done = alert_obs.done or False
             rewards.append(reward)
             steps_taken = 1
@@ -194,7 +194,7 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
             step_result = await env.step(action)
             obs = step_result.observation
 
-            reward = obs.reward if obs.reward is not None else 0.00
+            reward = max(0.01, min(0.99, obs.reward if obs.reward is not None else 0.01))
             done = obs.done or False
             rewards.append(reward)
             steps_taken = step
@@ -206,47 +206,62 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
                 messages.append({"role": "tool", "tool_call_id": tool_call_id,
                                "content": result_text[:2000]})
 
-        # Final score is the terminal reward from environment (already clamped to 0.01-0.99)
+        # Final score — always strictly in (0, 1)
         final_reward = rewards[-1] if rewards else 0.01
-        score = final_reward
+        score = max(0.01, min(0.99, final_reward))
         success = score >= 0.5
 
         return {"task": task_name, "reward": score, "steps": steps_taken, "metadata": getattr(obs, "metadata", {})}
 
+    except Exception as e:
+        # Even on crash, emit valid [END] with score in (0, 1)
+        score = 0.01
+        success = False
+        print(f"[DEBUG] Episode error: {e}", flush=True)
+        return {"task": task_name, "reward": 0.01, "steps": steps_taken, "metadata": {}}
+
     finally:
-        log_end(success=success, steps=steps_taken, rewards=rewards)
+        safe_rewards = [max(0.01, min(0.99, r)) for r in rewards] if rewards else [0.01]
+        log_end(success=success, steps=steps_taken, rewards=safe_rewards)
 
 
-async def main_async(base_url: str, preset: str = None, run_all: bool = False):
-    # Single-model run (default or specific preset)
+async def main_async(base_url: str):
     api_base = API_BASE_URL
     api_key = API_KEY
     model = MODEL_NAME
 
     if not api_key:
-        print("ERROR: Set HF_TOKEN or API_KEY environment variable")
+        print("ERROR: Set HF_TOKEN or API_KEY environment variable", flush=True)
         sys.exit(1)
 
     llm_client = OpenAI(base_url=api_base, api_key=api_key)
 
-    async with IncidentTriageEnv(base_url=base_url) as env:
-        mcp_tools = await env.list_tools()
-        tools = tools_to_openai_format(mcp_tools)
+    try:
+        async with IncidentTriageEnv(base_url=base_url) as env:
+            mcp_tools = await env.list_tools()
+            tools = tools_to_openai_format(mcp_tools)
 
-        results = []
-        for task in TASKS:
-            result = await run_episode(env, llm_client, tools, task, model)
-            results.append(result)
+            results = []
+            for task in TASKS:
+                try:
+                    result = await run_episode(env, llm_client, tools, task, model)
+                except Exception as e:
+                    print(f"[DEBUG] Task {task} failed: {e}", flush=True)
+                    result = {"task": task, "reward": 0.01, "steps": 0, "metadata": {}}
+                results.append(result)
 
-        # Summary
-        print(f"\n{'='*50}")
-        print("BASELINE RESULTS")
-        print(f"{'='*50}")
-        for r in results:
-            status = "PASS" if r["reward"] > 0.5 else "PARTIAL" if r["reward"] > 0 else "FAIL"
-            print(f"  {r['task']}: {r['reward']:.4f} ({status}) [{r['steps']} steps]")
-        avg = sum(r["reward"] for r in results) / len(results)
-        print(f"  Average: {avg:.4f}")
+            # Summary
+            print(f"\n{'='*50}", flush=True)
+            print("BASELINE RESULTS", flush=True)
+            print(f"{'='*50}", flush=True)
+            for r in results:
+                status = "PASS" if r["reward"] > 0.5 else "PARTIAL" if r["reward"] > 0 else "FAIL"
+                print(f"  {r['task']}: {r['reward']:.4f} ({status}) [{r['steps']} steps]", flush=True)
+            avg = sum(r["reward"] for r in results) / len(results)
+            print(f"  Average: {avg:.4f}", flush=True)
+    except Exception as e:
+        print(f"[DEBUG] Connection failed: {e}", flush=True)
+        sys.exit(1)
 
 
 def main():
@@ -255,6 +270,7 @@ def main():
                         help="Environment server URL")
     args = parser.parse_args()
     asyncio.run(main_async(args.base_url))
+
 
 
 if __name__ == "__main__":
