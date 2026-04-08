@@ -250,7 +250,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
             # Terminal: submit_report
             if action.tool_name == "submit_report":
                 terminal_reward = self._compute_terminal_reward()
-                total_reward = max(0.0, min(1.0,
+                total_reward = max(0.01, min(0.99,
                     terminal_reward
                     + self._state.investigation_reward
                     + self._state.penalty
@@ -282,7 +282,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
         # Max steps check
         if self._state.step_count >= MAX_STEPS:
             terminal_reward = self._compute_terminal_reward()
-            total_reward = max(0.0, min(1.0,
+            total_reward = max(0.01, min(0.99,
                 terminal_reward + self._state.investigation_reward + self._state.penalty - 0.1
             ))
             logger.info(f"Episode {self._state.episode_id} terminated: max steps reached")
