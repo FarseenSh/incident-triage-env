@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 MAX_STEPS = 20  # Environment max — inference.py should match or be lower
 
 
+def _safe_reward(value: float) -> float:
+    """Clamp reward to open interval (0, 1) — never exactly 0.0 or 1.0.
+    Phase 2 validation requires strictly between 0 and 1."""
+    if value is None:
+        return 0.01
+    return max(0.01, min(0.99, float(value)))
+
+
 class IncidentTriageEnvironment(MCPEnvironment):
     """SRE incident response triage environment using MCP tools."""
 
@@ -184,7 +192,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
 
         return Observation(
             done=False,
-            reward=0.01,
+            reward=_safe_reward(0.0),
             metadata={
                 "task_name": task_name,
                 "all_task_names": TASK_NAMES,  # Validators enumerate tasks from this
@@ -218,7 +226,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
         """Handle non-MCP actions. Returns error since this env is MCP-only."""
         return Observation(
             done=False,
-            reward=0.01,
+            reward=_safe_reward(0.0),
             metadata={
                 "error": f"Unknown action type: {type(action).__name__}. "
                 "Use ListToolsAction or CallToolAction for MCP interactions."
@@ -232,8 +240,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
     ) -> Observation:
         """Shared logic for processing a step result. Called by both step() and step_async()."""
         if self._current_scenario is None:
-            if hasattr(obs, 'reward'):
-                obs.reward = 0.01
+            obs.reward = _safe_reward(0.0)
             return obs
         gt = self._current_scenario.get_ground_truth()
         step_reward = 0.0
@@ -254,11 +261,12 @@ class IncidentTriageEnvironment(MCPEnvironment):
             # Terminal: submit_report
             if action.tool_name == "submit_report":
                 terminal_reward = self._compute_terminal_reward()
-                total_reward = max(0.01, min(0.99,
+                raw_total = (
                     terminal_reward
                     + self._state.investigation_reward
                     + self._state.penalty
-                ))
+                )
+                total_reward = _safe_reward(raw_total)
                 logger.info(
                     f"Episode {self._state.episode_id} ended: "
                     f"terminal={terminal_reward:.2f}, investigation={self._state.investigation_reward:.2f}, "
@@ -266,7 +274,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
                 )
                 return Observation(
                     done=True,
-                    reward=round(total_reward, 2),
+                    reward=total_reward,
                     metadata={
                         "terminal_reward": round(terminal_reward, 4),
                         "investigation_reward": round(self._state.investigation_reward, 4),
@@ -286,22 +294,24 @@ class IncidentTriageEnvironment(MCPEnvironment):
         # Max steps check
         if self._state.step_count >= MAX_STEPS:
             terminal_reward = self._compute_terminal_reward()
-            total_reward = max(0.01, min(0.99,
-                terminal_reward + self._state.investigation_reward + self._state.penalty - 0.1
-            ))
+            raw_total = (
+                terminal_reward + self._state.investigation_reward
+                + self._state.penalty - 0.1
+            )
+            total_reward = _safe_reward(raw_total)
             logger.info(f"Episode {self._state.episode_id} terminated: max steps reached")
             return Observation(
                 done=True,
-                reward=round(total_reward, 2),
+                reward=total_reward,
                 metadata={
                     "error": f"Max steps ({MAX_STEPS}) reached.",
                     "terminal_reward": round(terminal_reward, 4),
                 },
             )
 
-        # Non-terminal: preserve tool result but ensure reward is in (0, 1)
-        if hasattr(obs, 'reward'):
-            obs.reward = 0.01
+        # Non-terminal: return original observation UNCHANGED to preserve tool result.
+        # Only override reward to ensure it's in valid range.
+        obs.reward = _safe_reward(0.0)
         return obs
 
     # ── step() — sync path ────────────────────────────────────────
@@ -317,10 +327,9 @@ class IncidentTriageEnvironment(MCPEnvironment):
         if isinstance(action, CallToolAction):
             self._state.step_count += 1
         obs = super().step(action, timeout_s=timeout_s, **kwargs)
-        # ListToolsAction: pass through but ensure reward is in (0, 1)
+        # ListToolsAction: pass through but ensure reward is in valid range
         if not isinstance(action, CallToolAction):
-            if hasattr(obs, 'reward'):
-                obs.reward = 0.01
+            obs.reward = _safe_reward(0.0)
             return obs
         return self._process_step_result(action, obs)
 
@@ -340,8 +349,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
             self._state.step_count += 1
         obs = await super().step_async(action, timeout_s=timeout_s, **kwargs)
         if not isinstance(action, CallToolAction):
-            if hasattr(obs, 'reward'):
-                obs.reward = 0.01
+            obs.reward = _safe_reward(0.0)
             return obs
         return self._process_step_result(action, obs)
 
@@ -386,8 +394,8 @@ class IncidentTriageEnvironment(MCPEnvironment):
         This prevents reward hacking — agents cannot call state() to read answers.
         The full state (with ground truth) is only used internally for grading.
         """
-        # Return a copy with ground truth fields blanked out
-        sanitized = self._state.model_copy()
+        import copy
+        sanitized = copy.copy(self._state)
         sanitized.ground_truth_severity = ""
         sanitized.ground_truth_root_cause_service = ""
         sanitized.ground_truth_root_cause_category = ""
