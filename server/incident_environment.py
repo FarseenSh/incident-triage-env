@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 
 MAX_STEPS = 20  # Environment max — inference.py should match or be lower
 
+# SRE workflow phases: tool_name -> phase
+_TOOL_PHASES = {
+    "get_alerts": "INVESTIGATE", "read_logs": "INVESTIGATE",
+    "check_metrics": "INVESTIGATE", "get_service_topology": "INVESTIGATE",
+    "set_severity": "DIAGNOSE", "diagnose": "DIAGNOSE",
+    "remediate": "REMEDIATE", "submit_report": "REPORT",
+}
+_PHASE_ORDER = {"INVESTIGATE": 0, "DIAGNOSE": 1, "REMEDIATE": 2, "REPORT": 3}
+
 
 def _safe_reward(value: float) -> float:
     """Clamp reward to open interval (0, 1) — never exactly 0.0 or 1.0.
@@ -157,6 +166,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
         self._service_graph = ServiceGraph()
         self._current_scenario = None
         self._state = IncidentTriageState()
+        self._seen_actions: set = set()
 
     # ── reset() ────────────────────────────────────────────────────
 
@@ -184,6 +194,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
             ground_truth_remediation_target=gt.remediation_target,
             ground_truth_affected_services=gt.affected_services,
         )
+        self._seen_actions = set()
 
         initial_text = self._current_scenario.get_initial_observation_text()
         alert_summary = json.dumps(self._current_scenario.get_alerts()[:3], indent=2)
@@ -240,13 +251,53 @@ class IncidentTriageEnvironment(MCPEnvironment):
     ) -> Observation:
         """Shared logic for processing a step result. Called by both step() and step_async()."""
         if self._current_scenario is None:
-            obs.reward = _safe_reward(0.0)
+            if hasattr(obs, 'reward'):
+                obs.reward = _safe_reward(0.0)
             return obs
         gt = self._current_scenario.get_ground_truth()
         step_reward = 0.0
 
         if isinstance(action, CallToolAction):
-            # Per-step investigation reward
+            # ── Enhancement 2: Repeat action penalty ──
+            if action.tool_name != "submit_report":
+                try:
+                    action_key = (action.tool_name, frozenset(sorted(action.arguments.items())))
+                except TypeError:
+                    action_key = (action.tool_name, str(sorted(action.arguments.items())))
+                if action_key in self._seen_actions:
+                    self._state.penalty -= 0.02
+                    self._state.repeated_actions += 1
+                else:
+                    self._seen_actions.add(action_key)
+
+            # ── Enhancement 1: Workflow phase tracking ──
+            tool_phase = _TOOL_PHASES.get(action.tool_name, "INVESTIGATE")
+
+            # Track investigation tool markers
+            if action.tool_name == "read_logs" and "read_logs_called" not in self._state.actions_taken:
+                self._state.actions_taken.append("read_logs_called")
+            if action.tool_name == "check_metrics" and "check_metrics_called" not in self._state.actions_taken:
+                self._state.actions_taken.append("check_metrics_called")
+
+            # Workflow violation: diagnose/remediate before investigation
+            has_investigated = (
+                "read_logs_called" in self._state.actions_taken
+                and "check_metrics_called" in self._state.actions_taken
+            )
+            if tool_phase in ("DIAGNOSE", "REMEDIATE") and not has_investigated:
+                self._state.penalty -= 0.02
+                self._state.workflow_violations += 1
+
+            # One-time workflow bonus: completed investigation before diagnosis
+            if (_PHASE_ORDER.get(tool_phase, 0) >= 1
+                    and self._state.workflow_bonus == 0.0
+                    and has_investigated):
+                self._state.workflow_bonus = 0.03
+                self._state.investigation_reward += 0.03
+
+            self._state.workflow_phase = tool_phase
+
+            # ── Existing: Per-step investigation reward ──
             if action.tool_name in ("read_logs", "check_metrics"):
                 service = action.arguments.get("service", "")
                 if service in gt.affected_services or service in gt.causal_chain:
@@ -258,7 +309,16 @@ class IncidentTriageEnvironment(MCPEnvironment):
                 self._state.actions_taken.append("alerts")
                 step_reward = 0.01
 
-            # Terminal: submit_report
+            # ── Enhancement 4: Investigation depth reward ──
+            num_investigated = len(self._state.services_investigated)
+            if num_investigated >= 5 and "depth_bonus_5" not in self._state.actions_taken:
+                self._state.actions_taken.append("depth_bonus_5")
+                step_reward += 0.01 if "depth_bonus_3" in self._state.actions_taken else 0.03
+            elif num_investigated >= 3 and "depth_bonus_3" not in self._state.actions_taken:
+                self._state.actions_taken.append("depth_bonus_3")
+                step_reward += 0.02
+
+            # ── Terminal: submit_report ──
             if action.tool_name == "submit_report":
                 terminal_reward = self._compute_terminal_reward()
                 raw_total = (
@@ -270,7 +330,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
                 logger.info(
                     f"Episode {self._state.episode_id} ended: "
                     f"terminal={terminal_reward:.2f}, investigation={self._state.investigation_reward:.2f}, "
-                    f"penalty={self._state.penalty:.2f}, total={total_reward:.4f}"
+                    f"penalty={self._state.penalty:.2f}, total={total_reward}"
                 )
                 return Observation(
                     done=True,
@@ -286,6 +346,24 @@ class IncidentTriageEnvironment(MCPEnvironment):
                             self._state.agent_remediation_action == gt.remediation_action
                             and self._state.agent_remediation_target == gt.remediation_target
                         ),
+                        "grading_rubric": {
+                            "severity": {"weight": 0.20, "exact": 0.20, "partial": 0.10},
+                            "service_id": {"weight": 0.20, "exact": 0.20, "partial": 0.10},
+                            "root_cause": {"weight": 0.30, "exact": 0.30},
+                            "remediation": {"weight": 0.30, "exact": 0.30, "partial": 0.10},
+                            "efficiency": {"max": 0.07},
+                            "workflow": {"bonus": 0.03, "violation_penalty": -0.02},
+                        },
+                        "investigation_summary": {
+                            "services_checked": list(self._state.services_investigated),
+                            "total_steps": self._state.step_count,
+                            "repeated_actions": self._state.repeated_actions,
+                        },
+                        "workflow_score": {
+                            "bonus": round(self._state.workflow_bonus, 4),
+                            "violations": self._state.workflow_violations,
+                        },
+                        "efficiency_score": round(self._state.efficiency_bonus, 4),
                     },
                 )
 
@@ -309,9 +387,9 @@ class IncidentTriageEnvironment(MCPEnvironment):
                 },
             )
 
-        # Non-terminal: return original observation UNCHANGED to preserve tool result.
-        # Only override reward to ensure it's in valid range.
-        obs.reward = _safe_reward(0.0)
+        # Non-terminal: preserve tool result, set reward to valid range
+        if hasattr(obs, 'reward'):
+            obs.reward = _safe_reward(0.0)
         return obs
 
     # ── step() — sync path ────────────────────────────────────────
@@ -384,6 +462,18 @@ class IncidentTriageEnvironment(MCPEnvironment):
             score += 0.3
         elif self._state.agent_remediation_action == gt.remediation_action:
             score += 0.1  # Partial: right action, wrong target
+
+        # Enhancement 3: Efficiency bonus (capped at 0.07)
+        eff = 0.0
+        if self._state.step_count <= 8:
+            eff += 0.05
+        elif self._state.step_count <= 12:
+            eff += 0.03
+        if len(self._state.services_investigated) <= 4:
+            eff += 0.02
+        eff = min(eff, 0.07)
+        self._state.efficiency_bonus = eff
+        score += eff
 
         return score
 

@@ -88,3 +88,14 @@ class IncidentTriageState(State):
     # Reward tracking
     investigation_reward: float = 0.0
     penalty: float = 0.0
+
+    # Workflow phase tracking
+    workflow_phase: str = "INVESTIGATE"
+    workflow_bonus: float = 0.0
+    workflow_violations: int = 0
+
+    # Repeat action tracking
+    repeated_actions: int = 0
+
+    # Efficiency tracking
+    efficiency_bonus: float = 0.0

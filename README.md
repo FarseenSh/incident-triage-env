@@ -178,10 +178,24 @@ asyncio.run(main())
 | Investigate relevant service | +0.02 | `read_logs`/`check_metrics` on affected service |
 | First `get_service_topology` | +0.01 | One-time bonus |
 | First `get_alerts` | +0.01 | One-time bonus |
+| Investigation depth (3+ services) | +0.02 | One-time breadth bonus |
+| Investigation depth (5+ services) | +0.03 | Replaces 3-service bonus |
+| Correct workflow order | +0.03 | Investigated before diagnosing |
 | Restart healthy service | -0.03 | Penalty for destructive action |
+| Diagnose before investigating | -0.02 | Skipped investigation phase |
+| Repeat same action | -0.02 | Duplicate tool call with same args |
 | Max steps exhausted (20) | -0.10 | Episode forced termination |
 
-**Total** = terminal + investigation + penalty, clamped to [0.0, 1.0]
+### Efficiency Bonus (terminal)
+
+| Condition | Bonus |
+|-----------|-------|
+| Solved in ≤8 steps | +0.05 |
+| Solved in ≤12 steps | +0.03 |
+| Investigated ≤4 services | +0.02 |
+| **Max efficiency bonus** | **+0.07** |
+
+**Total** = terminal + investigation + workflow + efficiency + penalty, clamped to (0.02, 0.98)
 
 ---
 
