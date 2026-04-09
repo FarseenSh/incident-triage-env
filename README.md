@@ -6,6 +6,8 @@ colorTo: yellow
 sdk: docker
 app_port: 8000
 pinned: false
+tags:
+  - openenv
 ---
 
 # Incident Response Triage Environment
@@ -206,12 +208,12 @@ We benchmarked three models across all five tasks. The environment produces cons
 
 | Model | Easy | Med Cascade | Med Disk | Hard Intermit. | Hard NetPart | Avg |
 |-------|------|-------------|----------|----------------|--------------|-----|
-| **Qwen 3.6 Plus** | 1.00 | 1.00 | 0.68 | 0.75 | 0.82 | **0.85** |
-| **Kimi K2.5** | 1.00 | 1.00 | 1.00 | 0.00 | 0.80 | **0.76** |
+| **Qwen 3.6 Plus** | 0.98 | 0.98 | 0.68 | 0.75 | 0.82 | **0.84** |
+| **Kimi K2.5** | 0.98 | 0.98 | 0.98 | 0.02 | 0.80 | **0.75** |
 | **Gemma 4 26B** | 0.82 | 0.76 | 0.90 | 0.66 | 0.55 | **0.74** |
 
 **Key findings:**
-- All models ace the easy task but struggle on hard scenarios (0.00–0.82)
+- All models ace the easy task but struggle on hard scenarios (0.02–0.82)
 - Different models fail in different ways — Kimi completely fails `hard_intermittent` (gives up without submitting), Gemma gets wrong root cause on `hard_network_partition`
 - The red herring mechanics genuinely fool frontier models
 - Score variance across tasks proves the grader differentiates behavior, not just model identity

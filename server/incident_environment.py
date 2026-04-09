@@ -395,7 +395,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
         The full state (with ground truth) is only used internally for grading.
         """
         import copy
-        sanitized = copy.copy(self._state)
+        sanitized = copy.deepcopy(self._state)
         sanitized.ground_truth_severity = ""
         sanitized.ground_truth_root_cause_service = ""
         sanitized.ground_truth_root_cause_category = ""
