@@ -1,7 +1,7 @@
 """
 Inference Script — Incident Response Triage Environment
 ========================================================
-MANDATORY:
+MANDATORY env vars:
     API_BASE_URL   The API endpoint for the LLM.
     MODEL_NAME     The model identifier to use for inference.
     HF_TOKEN       Your Hugging Face / API key.
@@ -13,28 +13,20 @@ STDOUT FORMAT:
 
 Usage:
     python inference.py
-    python inference.py --base-url https://your-space.hf.space
+    python inference.py --base-url http://localhost:8000
+    python inference.py --base-url https://Farseen0-incident-triage-env.hf.space
 """
 import argparse
-import asyncio
 import json
 import os
 import sys
 import time
 import traceback
+import urllib.request
+import urllib.error
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
-from openenv.core.env_server.mcp_types import CallToolAction
-
-# Try local import first, fall back to installed package
-try:
-    from client import IncidentTriageEnv
-except ImportError:
-    try:
-        from incident_triage_env.client import IncidentTriageEnv
-    except ImportError:
-        from openenv.core.mcp_client import MCPToolClient as IncidentTriageEnv
 
 # ─── Configuration ────────────────────────────────────────
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
@@ -72,7 +64,7 @@ def log_start(task: str, model: str) -> None:
     print(f"[START] task={task} env={BENCHMARK} model={model}", flush=True)
 
 
-def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str] = None) -> None:
     error_val = error if error else "null"
     done_val = str(done).lower()
     print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
@@ -85,36 +77,127 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
     print(f"[END] success={str(success).lower()} steps={steps} score={safe_score:.2f} rewards={rewards_str}", flush=True)
 
 
-# ─── Tool conversion ─────────────────────────────────────
+# ─── HTTP helpers (no openenv dependency) ─────────────────
 
-def tools_to_openai_format(mcp_tools) -> List[dict]:
-    """Convert MCP tool definitions to OpenAI function-calling format."""
-    result = []
-    for tool in mcp_tools:
-        props = {}
-        required = []
-        schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", {}) or {}
-        if isinstance(schema, dict) and "properties" in schema:
-            for name, field_schema in schema["properties"].items():
-                props[name] = {
-                    "type": field_schema.get("type", "string"),
-                    "description": field_schema.get("description", ""),
-                }
-            required = schema.get("required", [])
-        result.append({
-            "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": getattr(tool, "description", "") or "",
-                "parameters": {"type": "object", "properties": props, "required": required},
-            },
+def http_post(url: str, data: dict) -> dict:
+    """POST JSON to URL and return parsed response."""
+    body = json.dumps(data).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def http_get(url: str) -> dict:
+    """GET URL and return parsed response."""
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def env_reset(base_url: str, task_name: str) -> dict:
+    """Reset the environment via HTTP POST /reset."""
+    return http_post(f"{base_url}/reset", {"task_name": task_name})
+
+
+def env_step(base_url: str, tool_name: str, arguments: dict) -> dict:
+    """Execute a tool call via HTTP POST /step."""
+    return http_post(f"{base_url}/step", {
+        "action": {
+            "type": "call_tool",
+            "tool_name": tool_name,
+            "arguments": arguments,
+        }
+    })
+
+
+def extract_result_text(obs: dict) -> str:
+    """Extract readable text from a step observation."""
+    result = obs.get("result")
+    if result is None:
+        return "No result."
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        # FastMCP wraps results in content list
+        if "content" in result:
+            content = result["content"]
+            if isinstance(content, list):
+                texts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        texts.append(item.get("text", json.dumps(item)))
+                    else:
+                        texts.append(str(item))
+                return "\n".join(texts)
+            return str(content)
+        if "data" in result:
+            return str(result["data"])
+        if "structured_content" in result:
+            sc = result["structured_content"]
+            return sc.get("result", json.dumps(sc))
+        return json.dumps(result, indent=2)
+    return str(result)
+
+
+# ─── Tool schema discovery ────────────────────────────────
+
+def discover_tools(base_url: str) -> List[dict]:
+    """Discover available tools from the environment and convert to OpenAI format."""
+    # Use HTTP /step with list_tools action
+    try:
+        resp = http_post(f"{base_url}/step", {
+            "action": {"type": "list_tools"}
         })
-    return result
+        obs = resp.get("observation", {})
+        tools_list = obs.get("tools", [])
+    except Exception:
+        # Fallback: hardcoded tool definitions (we know our own tools)
+        tools_list = []
+
+    if tools_list:
+        result = []
+        for tool in tools_list:
+            schema = tool.get("input_schema", tool.get("inputSchema", {}))
+            props = {}
+            required = []
+            if isinstance(schema, dict) and "properties" in schema:
+                for name, field_schema in schema["properties"].items():
+                    props[name] = {
+                        "type": field_schema.get("type", "string"),
+                        "description": field_schema.get("description", ""),
+                    }
+                required = schema.get("required", [])
+            result.append({
+                "type": "function",
+                "function": {
+                    "name": tool.get("name", ""),
+                    "description": tool.get("description", ""),
+                    "parameters": {"type": "object", "properties": props, "required": required},
+                },
+            })
+        return result
+
+    # Hardcoded fallback — our known tool definitions
+    return [
+        {"type": "function", "function": {"name": "get_alerts", "description": "Get all currently firing alerts for the incident, including the incident briefing.", "parameters": {"type": "object", "properties": {}, "required": []}}},
+        {"type": "function", "function": {"name": "read_logs", "description": "Read recent log lines from a specific service.", "parameters": {"type": "object", "properties": {"service": {"type": "string", "description": "Service name"}, "lines": {"type": "integer", "description": "Number of log lines (default 50, max 200)"}}, "required": ["service"]}}},
+        {"type": "function", "function": {"name": "check_metrics", "description": "Check performance metrics for a service.", "parameters": {"type": "object", "properties": {"service": {"type": "string", "description": "Service name"}, "metric": {"type": "string", "description": "Metric name or 'all'"}}, "required": ["service"]}}},
+        {"type": "function", "function": {"name": "get_service_topology", "description": "Get the microservice dependency graph.", "parameters": {"type": "object", "properties": {}, "required": []}}},
+        {"type": "function", "function": {"name": "set_severity", "description": "Classify the incident severity.", "parameters": {"type": "object", "properties": {"level": {"type": "string", "description": "P1, P2, P3, or P4"}}, "required": ["level"]}}},
+        {"type": "function", "function": {"name": "diagnose", "description": "Submit root cause diagnosis.", "parameters": {"type": "object", "properties": {"root_cause_service": {"type": "string", "description": "Root cause service"}, "root_cause_category": {"type": "string", "description": "Root cause category"}}, "required": ["root_cause_service", "root_cause_category"]}}},
+        {"type": "function", "function": {"name": "remediate", "description": "Take a remediation action.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "Remediation action"}, "target_service": {"type": "string", "description": "Target service"}}, "required": ["action", "target_service"]}}},
+        {"type": "function", "function": {"name": "submit_report", "description": "Finalize your incident report. Ends the episode.", "parameters": {"type": "object", "properties": {}, "required": []}}},
+    ]
 
 
 # ─── Episode runner ───────────────────────────────────────
 
-async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -> Dict[str, Any]:
+def run_episode(base_url: str, llm_client, tools: List[dict], task_name: str, model_name: str) -> Dict[str, Any]:
     """Run a single incident triage episode with structured logging."""
     rewards: List[float] = []
     steps_taken = 0
@@ -125,71 +208,38 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
 
     try:
         # Reset the environment
-        reset_result = await env.reset(task_name=task_name)
+        reset_data = env_reset(base_url, task_name)
 
-        # Extract observation — handle both StepResult wrapper and raw Observation
-        if hasattr(reset_result, "observation"):
-            reset_obs = reset_result.observation
-        else:
-            reset_obs = reset_result
-
-        # Always fetch alerts as first step — most reliable way to get context
-        # (WebSocket client path may lose custom observation fields from reset)
-        alert_result = await env.step(CallToolAction(tool_name="get_alerts", arguments={}))
-        alert_obs = alert_result.observation if hasattr(alert_result, "observation") else alert_result
-        alerts_text = ""
-        if hasattr(alert_obs, "result"):
-            result = alert_obs.result
-            if isinstance(result, str):
-                alerts_text = result
-            elif isinstance(result, dict):
-                alerts_text = json.dumps(result, indent=2)
-            elif hasattr(result, "data"):
-                alerts_text = str(result.data)
-            elif hasattr(result, "content"):
-                # FastMCP wraps results in content list
-                content = result.content if isinstance(result.content, list) else [result.content]
-                texts = []
-                for item in content:
-                    if isinstance(item, dict):
-                        texts.append(item.get("text", str(item)))
-                    elif hasattr(item, "text"):
-                        texts.append(item.text)
-                    else:
-                        texts.append(str(item))
-                alerts_text = "\n".join(texts)
-            else:
-                alerts_text = str(result)
-
-        reward = max(0.02, min(0.98, getattr(alert_obs, "reward", 0.02) or 0.02))
-        done = getattr(alert_obs, "done", False) or False
+        # Get alerts as first step (most reliable way to get context)
+        alert_data = env_step(base_url, "get_alerts", {})
+        alert_obs = alert_data.get("observation", {})
+        alert_text = extract_result_text(alert_obs)
+        reward = max(0.02, min(0.98, alert_data.get("reward") or 0.02))
+        done = alert_data.get("done", False)
         rewards.append(reward)
         steps_taken = 1
-        log_step(step=1, action="get_alerts()", reward=reward, done=done, error=None)
+        log_step(step=1, action="get_alerts()", reward=reward, done=done)
 
-        # Extract briefing from alert text or use default
+        # Extract briefing from alert response
         briefing = f"An incident has been detected in task: {task_name}. Investigate immediately."
-        if alerts_text:
-            try:
-                alert_data = json.loads(alerts_text)
-                if isinstance(alert_data, dict) and "briefing" in alert_data:
-                    briefing = alert_data["briefing"]
-                    alerts_text = json.dumps(alert_data.get("alerts", []), indent=2)
-            except (json.JSONDecodeError, TypeError):
-                pass
+        try:
+            parsed = json.loads(alert_text) if isinstance(alert_text, str) else alert_text
+            if isinstance(parsed, dict) and "briefing" in parsed:
+                briefing = parsed["briefing"]
+                alert_text = json.dumps(parsed.get("alerts", []), indent=2)
+        except (json.JSONDecodeError, TypeError):
+            pass
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"INCIDENT BRIEFING:\n{briefing}\n\nINITIAL ALERTS:\n{alerts_text}"},
+            {"role": "user", "content": f"INCIDENT BRIEFING:\n{briefing}\n\nINITIAL ALERTS:\n{alert_text}"},
         ]
 
-        obs = alert_obs
         step = steps_taken
-        while not getattr(obs, "done", False) and step < MAX_STEPS:
+        while not done and step < MAX_STEPS:
             step += 1
-            temp = 0.1
 
-            # LLM call with retry on rate limits
+            # LLM call with retry
             response = None
             for attempt in range(5):
                 try:
@@ -199,7 +249,7 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
                         tools=tools,
                         tool_choice="auto",
                         max_tokens=512,
-                        temperature=temp,
+                        temperature=0.1,
                     )
                     break
                 except Exception as e:
@@ -212,13 +262,10 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
                         raise
 
             if response is None:
-                print("[DEBUG] LLM returned no response after retries", flush=True)
                 break
 
             msg = response.choices[0].message
             if not msg.tool_calls:
-                # No tool call — LLM may have finished or be confused
-                print(f"[DEBUG] No tool calls in response, finishing", flush=True)
                 break
 
             tc = msg.tool_calls[0]
@@ -229,61 +276,33 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
                 tool_args = {}
             tool_call_id = tc.id
 
-            # Build assistant message
-            assistant_msg = {
+            # Add assistant message to conversation
+            messages.append({
                 "role": "assistant",
                 "content": getattr(msg, "content", None),
                 "tool_calls": [{"id": tool_call_id, "type": "function",
                                "function": {"name": tool_name, "arguments": tc.function.arguments}}],
-            }
-            messages.append(assistant_msg)
+            })
 
-            # Execute action
+            # Execute action via HTTP
             action_str = f"{tool_name}({json.dumps(tool_args)})"
             try:
-                action = CallToolAction(tool_name=tool_name, arguments=tool_args)
-                step_result = await env.step(action)
-                obs = step_result.observation if hasattr(step_result, "observation") else step_result
+                step_data = env_step(base_url, tool_name, tool_args)
+                obs = step_data.get("observation", {})
+                reward = max(0.02, min(0.98, step_data.get("reward") or 0.02))
+                done = step_data.get("done", False)
             except Exception as e:
                 print(f"[DEBUG] Step error: {e}", flush=True)
-                obs = type("FakeObs", (), {"done": False, "reward": 0.02, "result": str(e)})()
+                obs = {}
+                reward = 0.02
+                done = False
 
-            reward = max(0.02, min(0.98, getattr(obs, "reward", 0.02) or 0.02))
-            done = getattr(obs, "done", False) or False
             rewards.append(reward)
             steps_taken = step
-
-            log_step(step=step, action=action_str, reward=reward, done=done, error=None)
+            log_step(step=step, action=action_str, reward=reward, done=done)
 
             if not done:
-                # Extract result text for LLM context
-                result_text = ""
-                if hasattr(obs, "result"):
-                    result = obs.result
-                    if isinstance(result, str):
-                        result_text = result
-                    elif isinstance(result, dict):
-                        result_text = json.dumps(result, indent=2)
-                    elif hasattr(result, "data"):
-                        result_text = str(result.data)
-                    elif hasattr(result, "content"):
-                        content = result.content if isinstance(result.content, list) else [result.content]
-                        texts = []
-                        for item in content:
-                            if isinstance(item, dict):
-                                texts.append(item.get("text", str(item)))
-                            elif hasattr(item, "text"):
-                                texts.append(item.text)
-                            else:
-                                texts.append(str(item))
-                        result_text = "\n".join(texts)
-                    else:
-                        result_text = str(result)
-                elif hasattr(obs, "metadata") and obs.metadata:
-                    result_text = json.dumps(obs.metadata, indent=2)
-                else:
-                    result_text = "Action completed."
-
+                result_text = extract_result_text(obs)
                 messages.append({"role": "tool", "tool_call_id": tool_call_id,
                                "content": result_text[:4000]})
 
@@ -291,67 +310,17 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
         final_reward = rewards[-1] if rewards else 0.02
         score = max(0.02, min(0.98, final_reward))
         success = score >= 0.5
-
-        return {"task": task_name, "reward": score, "steps": steps_taken, "metadata": {}}
+        return {"task": task_name, "reward": score, "steps": steps_taken}
 
     except Exception as e:
         print(f"[DEBUG] Episode error: {traceback.format_exc()}", flush=True)
         score = 0.02
         success = False
-        return {"task": task_name, "reward": 0.02, "steps": steps_taken, "metadata": {}}
+        return {"task": task_name, "reward": 0.02, "steps": steps_taken}
 
     finally:
         final_score = max(0.02, min(0.98, score))
         log_end(success=success, steps=steps_taken, score=final_score, rewards=rewards)
-
-
-async def main_async(base_url: str):
-    api_base = API_BASE_URL
-    api_key = API_KEY
-    model = MODEL_NAME
-
-    if not api_key:
-        print("ERROR: Set HF_TOKEN or API_KEY environment variable", flush=True)
-        sys.exit(1)
-
-    print(f"[DEBUG] Connecting to {base_url}", flush=True)
-    print(f"[DEBUG] Using LLM: {model} at {api_base}", flush=True)
-
-    llm_client = OpenAI(base_url=api_base, api_key=api_key)
-
-    try:
-        async with IncidentTriageEnv(base_url=base_url) as env:
-            mcp_tools = await env.list_tools()
-            tools = tools_to_openai_format(mcp_tools)
-            print(f"[DEBUG] Discovered {len(tools)} tools", flush=True)
-
-            results = []
-            for task in TASKS:
-                try:
-                    result = await run_episode(env, llm_client, tools, task, model)
-                except Exception as e:
-                    print(f"[DEBUG] Task {task} failed: {traceback.format_exc()}", flush=True)
-                    result = {"task": task, "reward": 0.02, "steps": 0, "metadata": {}}
-                    log_start(task=task, model=model)
-                    log_end(success=False, steps=0, score=0.02, rewards=[0.02])
-                results.append(result)
-
-            # Summary
-            print(f"\n{'='*50}", flush=True)
-            print("BASELINE RESULTS", flush=True)
-            print(f"{'='*50}", flush=True)
-            for r in results:
-                status = "PASS" if r["reward"] > 0.5 else "PARTIAL" if r["reward"] > 0 else "FAIL"
-                print(f"  {r['task']}: {r['reward']:.4f} ({status}) [{r['steps']} steps]", flush=True)
-            avg = sum(r["reward"] for r in results) / len(results)
-            print(f"  Average: {avg:.4f}", flush=True)
-    except Exception as e:
-        print(f"[DEBUG] Connection failed: {traceback.format_exc()}", flush=True)
-        # Emit valid [END] markers for all tasks so evaluator can parse output
-        for task in TASKS:
-            log_start(task=task, model=model)
-            log_end(success=False, steps=0, score=0.02, rewards=[0.02])
-        sys.exit(1)
 
 
 def main():
@@ -359,7 +328,56 @@ def main():
     parser.add_argument("--base-url", default="http://localhost:8000",
                         help="Environment server URL")
     args = parser.parse_args()
-    asyncio.run(main_async(args.base_url))
+
+    api_key = API_KEY
+    model = MODEL_NAME
+
+    if not api_key:
+        print("ERROR: Set HF_TOKEN or API_KEY environment variable", flush=True)
+        sys.exit(1)
+
+    base_url = args.base_url.rstrip("/")
+    print(f"[DEBUG] Connecting to {base_url}", flush=True)
+    print(f"[DEBUG] Using LLM: {model} at {API_BASE_URL}", flush=True)
+
+    # Verify server is reachable
+    try:
+        health = http_get(f"{base_url}/health")
+        print(f"[DEBUG] Server health: {health.get('status')}", flush=True)
+    except Exception as e:
+        print(f"[DEBUG] Server not reachable: {e}", flush=True)
+        # Still emit valid output so evaluator can parse
+        for task in TASKS:
+            log_start(task=task, model=model)
+            log_end(success=False, steps=0, score=0.02, rewards=[0.02])
+        sys.exit(1)
+
+    llm_client = OpenAI(base_url=API_BASE_URL, api_key=api_key)
+
+    # Discover tools
+    tools = discover_tools(base_url)
+    print(f"[DEBUG] Discovered {len(tools)} tools", flush=True)
+
+    results = []
+    for task in TASKS:
+        try:
+            result = run_episode(base_url, llm_client, tools, task, model)
+        except Exception as e:
+            print(f"[DEBUG] Task {task} failed: {traceback.format_exc()}", flush=True)
+            result = {"task": task, "reward": 0.02, "steps": 0}
+            log_start(task=task, model=model)
+            log_end(success=False, steps=0, score=0.02, rewards=[0.02])
+        results.append(result)
+
+    # Summary
+    print(f"\n{'='*50}", flush=True)
+    print("BASELINE RESULTS", flush=True)
+    print(f"{'='*50}", flush=True)
+    for r in results:
+        status = "PASS" if r["reward"] > 0.5 else "PARTIAL" if r["reward"] > 0 else "FAIL"
+        print(f"  {r['task']}: {r['reward']:.4f} ({status}) [{r['steps']} steps]", flush=True)
+    avg = sum(r["reward"] for r in results) / len(results)
+    print(f"  Average: {avg:.4f}", flush=True)
 
 
 if __name__ == "__main__":
