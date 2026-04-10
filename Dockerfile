@@ -17,13 +17,13 @@ RUN if ! command -v uv >/dev/null 2>&1; then \
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install deps (two-pass for Docker layer caching)
+# Install deps then project in editable mode so source files are used at runtime
 RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ -f uv.lock ]; then uv sync --frozen --no-install-project --no-editable; \
-    else uv sync --no-install-project --no-editable; fi
+    if [ -f uv.lock ]; then uv sync --frozen --no-install-project; \
+    else uv sync --no-install-project; fi
 RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ -f uv.lock ]; then uv sync --frozen --no-editable; \
-    else uv sync --no-editable; fi
+    if [ -f uv.lock ]; then uv sync --frozen; \
+    else uv sync; fi
 
 # Final runtime stage
 FROM ${BASE_IMAGE}
