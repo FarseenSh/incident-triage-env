@@ -1,11 +1,12 @@
 """
-State types for the Incident Response Triage environment.
+State and observation types for the Incident Response Triage environment.
 
 This environment uses the MCP protocol for tool interactions.
 Use CallToolAction and ListToolsAction from openenv.core.env_server.mcp_types.
 """
-from typing import Dict, List, Optional
-from openenv.core.env_server.types import State
+from typing import Any, Dict, List, Optional
+from pydantic import Field
+from openenv.core.env_server.types import Observation, State
 
 
 AVAILABLE_TOOLS = [
@@ -99,3 +100,41 @@ class IncidentTriageState(State):
 
     # Efficiency tracking
     efficiency_bonus: float = 0.0
+
+
+# ── Custom observation types ──────────────────────────────────────
+# openenv-core's serialize_observation() excludes done, reward, AND metadata
+# from the HTTP response dict. Base Observation only has those 3 fields,
+# so the HTTP response is {"observation": {}, ...} — empty.
+# Custom subclass fields SURVIVE exclusion (like CallToolObservation's
+# tool_name/result/error do for the step path).
+
+
+class IncidentTriageResetObservation(Observation):
+    """Observation returned by reset(). Named fields survive HTTP serialization."""
+    task_name: str = Field(default="", description="Current task/scenario name")
+    all_task_names: List[str] = Field(default_factory=list, description="All available task names")
+    briefing: str = Field(default="", description="Incident briefing text")
+    initial_alerts: str = Field(default="", description="Initial alert summary JSON")
+    available_tools: List[str] = Field(default_factory=list, description="Available MCP tool names")
+    severity_options: List[str] = Field(default_factory=list, description="Valid severity levels")
+    root_cause_categories: List[str] = Field(default_factory=list, description="Valid root cause categories")
+    remediation_actions: List[str] = Field(default_factory=list, description="Valid remediation actions")
+    services: List[str] = Field(default_factory=list, description="Valid service names")
+    instructions: str = Field(default="", description="Agent instructions")
+
+
+class IncidentTriageTerminalObservation(Observation):
+    """Observation returned on episode termination (submit_report / max steps)."""
+    terminal_reward: float = Field(default=0.0, description="Terminal component of reward")
+    investigation_reward: float = Field(default=0.0, description="Investigation component")
+    penalty: float = Field(default=0.0, description="Penalty component")
+    severity_correct: bool = Field(default=False, description="Whether severity was correct")
+    service_correct: bool = Field(default=False, description="Whether root cause service was correct")
+    category_correct: bool = Field(default=False, description="Whether root cause category was correct")
+    remediation_correct: bool = Field(default=False, description="Whether remediation was correct")
+    grading_rubric: Dict[str, Any] = Field(default_factory=dict, description="Grading rubric breakdown")
+    investigation_summary: Dict[str, Any] = Field(default_factory=dict, description="Investigation details")
+    workflow_score: Dict[str, Any] = Field(default_factory=dict, description="Workflow scoring details")
+    efficiency_score: float = Field(default=0.0, description="Efficiency bonus")
+    error: Optional[str] = Field(default=None, description="Error message if applicable")

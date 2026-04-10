@@ -11,6 +11,7 @@ from openenv.core.env_server.types import Action, Observation
 from ..models import (
     AVAILABLE_TOOLS, SEVERITY_LEVELS, ROOT_CAUSE_CATEGORIES,
     REMEDIATION_ACTIONS, SERVICE_NAMES, TASK_NAMES, IncidentTriageState,
+    IncidentTriageResetObservation, IncidentTriageTerminalObservation,
 )
 from ..scenarios import ScenarioRegistry
 from ..simulation.service_graph import ServiceGraph
@@ -201,26 +202,32 @@ class IncidentTriageEnvironment(MCPEnvironment):
 
         logger.info(f"Reset episode {self._state.episode_id} with task: {task_name}")
 
-        return Observation(
+        instructions = (
+            "You are an SRE on-call. An incident has been detected. "
+            "Use the available tools to investigate, diagnose the root cause, "
+            "set the severity, apply remediation, and submit your report. "
+            "Available tools: get_alerts, read_logs, check_metrics, "
+            "get_service_topology, set_severity, diagnose, remediate, submit_report."
+        )
+
+        return IncidentTriageResetObservation(
             done=False,
             reward=_safe_reward(0.0),
+            task_name=task_name,
+            all_task_names=TASK_NAMES,
+            briefing=initial_text,
+            initial_alerts=alert_summary,
+            available_tools=AVAILABLE_TOOLS,
+            severity_options=SEVERITY_LEVELS,
+            root_cause_categories=ROOT_CAUSE_CATEGORIES,
+            remediation_actions=REMEDIATION_ACTIONS,
+            services=SERVICE_NAMES,
+            instructions=instructions,
             metadata={
                 "task_name": task_name,
-                "all_task_names": TASK_NAMES,  # Validators enumerate tasks from this
                 "briefing": initial_text,
                 "initial_alerts": alert_summary,
-                "available_tools": AVAILABLE_TOOLS,
-                "severity_options": SEVERITY_LEVELS,
-                "root_cause_categories": ROOT_CAUSE_CATEGORIES,
-                "remediation_actions": REMEDIATION_ACTIONS,
-                "services": SERVICE_NAMES,
-                "instructions": (
-                    "You are an SRE on-call. An incident has been detected. "
-                    "Use the available tools to investigate, diagnose the root cause, "
-                    "set the severity, apply remediation, and submit your report. "
-                    "Available tools: get_alerts, read_logs, check_metrics, "
-                    "get_service_topology, set_severity, diagnose, remediate, submit_report."
-                ),
+                "instructions": instructions,
             },
         )
 
@@ -235,13 +242,11 @@ class IncidentTriageEnvironment(MCPEnvironment):
         **kwargs: Any,
     ) -> Observation:
         """Handle non-MCP actions. Returns error since this env is MCP-only."""
-        return Observation(
+        return IncidentTriageTerminalObservation(
             done=False,
             reward=_safe_reward(0.0),
-            metadata={
-                "error": f"Unknown action type: {type(action).__name__}. "
-                "Use ListToolsAction or CallToolAction for MCP interactions."
-            },
+            error=f"Unknown action type: {type(action).__name__}. "
+                  "Use ListToolsAction or CallToolAction for MCP interactions.",
         )
 
     # ── Core step logic (shared by step and step_async) ───────────
@@ -332,39 +337,37 @@ class IncidentTriageEnvironment(MCPEnvironment):
                     f"terminal={terminal_reward:.2f}, investigation={self._state.investigation_reward:.2f}, "
                     f"penalty={self._state.penalty:.2f}, total={total_reward}"
                 )
-                return Observation(
+                return IncidentTriageTerminalObservation(
                     done=True,
                     reward=total_reward,
-                    metadata={
-                        "terminal_reward": round(terminal_reward, 4),
-                        "investigation_reward": round(self._state.investigation_reward, 4),
-                        "penalty": round(self._state.penalty, 4),
-                        "severity_correct": self._state.agent_severity == gt.severity,
-                        "service_correct": self._state.agent_root_cause_service == gt.root_cause_service,
-                        "category_correct": self._state.agent_root_cause_category == gt.root_cause_category,
-                        "remediation_correct": (
-                            self._state.agent_remediation_action == gt.remediation_action
-                            and self._state.agent_remediation_target == gt.remediation_target
-                        ),
-                        "grading_rubric": {
-                            "severity": {"weight": 0.20, "exact": 0.20, "partial": 0.10},
-                            "service_id": {"weight": 0.20, "exact": 0.20, "partial": 0.10},
-                            "root_cause": {"weight": 0.30, "exact": 0.30},
-                            "remediation": {"weight": 0.30, "exact": 0.30, "partial": 0.10},
-                            "efficiency": {"max": 0.07},
-                            "workflow": {"bonus": 0.03, "violation_penalty": -0.02},
-                        },
-                        "investigation_summary": {
-                            "services_checked": list(self._state.services_investigated),
-                            "total_steps": self._state.step_count,
-                            "repeated_actions": self._state.repeated_actions,
-                        },
-                        "workflow_score": {
-                            "bonus": round(self._state.workflow_bonus, 4),
-                            "violations": self._state.workflow_violations,
-                        },
-                        "efficiency_score": round(self._state.efficiency_bonus, 4),
+                    terminal_reward=round(terminal_reward, 4),
+                    investigation_reward=round(self._state.investigation_reward, 4),
+                    penalty=round(self._state.penalty, 4),
+                    severity_correct=self._state.agent_severity == gt.severity,
+                    service_correct=self._state.agent_root_cause_service == gt.root_cause_service,
+                    category_correct=self._state.agent_root_cause_category == gt.root_cause_category,
+                    remediation_correct=(
+                        self._state.agent_remediation_action == gt.remediation_action
+                        and self._state.agent_remediation_target == gt.remediation_target
+                    ),
+                    grading_rubric={
+                        "severity": {"weight": 0.20, "exact": 0.20, "partial": 0.10},
+                        "service_id": {"weight": 0.20, "exact": 0.20, "partial": 0.10},
+                        "root_cause": {"weight": 0.30, "exact": 0.30},
+                        "remediation": {"weight": 0.30, "exact": 0.30, "partial": 0.10},
+                        "efficiency": {"max": 0.07},
+                        "workflow": {"bonus": 0.03, "violation_penalty": -0.02},
                     },
+                    investigation_summary={
+                        "services_checked": list(self._state.services_investigated),
+                        "total_steps": self._state.step_count,
+                        "repeated_actions": self._state.repeated_actions,
+                    },
+                    workflow_score={
+                        "bonus": round(self._state.workflow_bonus, 4),
+                        "violations": self._state.workflow_violations,
+                    },
+                    efficiency_score=round(self._state.efficiency_bonus, 4),
                 )
 
         self._state.investigation_reward += step_reward
@@ -378,13 +381,11 @@ class IncidentTriageEnvironment(MCPEnvironment):
             )
             total_reward = _safe_reward(raw_total)
             logger.info(f"Episode {self._state.episode_id} terminated: max steps reached")
-            return Observation(
+            return IncidentTriageTerminalObservation(
                 done=True,
                 reward=total_reward,
-                metadata={
-                    "error": f"Max steps ({MAX_STEPS}) reached.",
-                    "terminal_reward": round(terminal_reward, 4),
-                },
+                error=f"Max steps ({MAX_STEPS}) reached.",
+                terminal_reward=round(terminal_reward, 4),
             )
 
         # Non-terminal: preserve tool result, set reward to valid range
@@ -493,3 +494,33 @@ class IncidentTriageEnvironment(MCPEnvironment):
         sanitized.ground_truth_remediation_target = ""
         sanitized.ground_truth_affected_services = []
         return sanitized
+
+    def get_metadata(self):
+        """Return populated environment metadata for the /metadata endpoint."""
+        from openenv.core.env_server.types import EnvironmentMetadata
+        readme = None
+        try:
+            from pathlib import Path
+            readme_path = Path(__file__).resolve().parent.parent / "README.md"
+            if readme_path.exists():
+                content = readme_path.read_text(encoding="utf-8")
+                # Strip YAML frontmatter for clean display
+                if content.startswith("---"):
+                    parts = content.split("---", 2)
+                    if len(parts) >= 3:
+                        content = parts[2].strip()
+                readme = content
+        except Exception:
+            pass
+        return EnvironmentMetadata(
+            name="IncidentTriageEnvironment",
+            description=(
+                "SRE incident response triage environment — AI agents investigate alerts, "
+                "trace dependency chains, identify root causes, and remediate simulated "
+                "production incidents across an 8-service microservice architecture."
+            ),
+            readme_content=readme,
+            version="1.0.0",
+            author="Farseen",
+            documentation_url="https://huggingface.co/spaces/Farseen0/incident-triage-env",
+        )

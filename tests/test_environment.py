@@ -51,8 +51,8 @@ def test_correct_answer_scores_high(env):
     obs = do_step(env, "submit_report")
     assert obs.done is True
     assert obs.reward >= 0.7
-    assert obs.metadata["severity_correct"] is True
-    assert obs.metadata["service_correct"] is True
+    assert obs.severity_correct is True
+    assert obs.service_correct is True
 
 
 # ── Test 4: Wrong answer scores low ──
