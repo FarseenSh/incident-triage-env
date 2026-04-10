@@ -14,9 +14,12 @@ def do_step(env, tool_name, **kwargs):
     return env.step(CallToolAction(tool_name=tool_name, arguments=kwargs))
 
 
-def assert_reward_in_range(reward):
+def assert_reward_in_range(reward, terminal=False):
     assert reward is not None, "Reward is None"
-    assert 0 < reward < 1, f"Reward {reward} not in (0, 1)"
+    if terminal:
+        assert 0 < reward < 1, f"Terminal reward {reward} not in (0, 1)"
+    else:
+        assert 0 <= reward <= 1, f"Reward {reward} not in [0, 1]"
 
 
 # ── Test 1: Reset returns valid observation ──
@@ -82,7 +85,7 @@ def test_rewards_strictly_in_range(env):
         do_step(env, "diagnose", root_cause_service="order-service", root_cause_category="memory_exhaustion")
         do_step(env, "remediate", action="restart_service", target_service="order-service")
         obs = do_step(env, "submit_report")
-        assert_reward_in_range(obs.reward)
+        assert_reward_in_range(obs.reward, terminal=True)
 
 
 # ── Test 6: Submit without diagnosis ──

@@ -394,9 +394,10 @@ class IncidentTriageEnvironment(MCPEnvironment):
                 terminal_reward=round(terminal_reward, 4),
             )
 
-        # Non-terminal: preserve tool result, set reward to valid range
+        # Non-terminal: show per-step signal for investigation progress
+        # Use raw step_reward (not clamped) so rewards= list shows variation
         if hasattr(obs, 'reward'):
-            obs.reward = _safe_reward(0.0)
+            obs.reward = round(step_reward, 2)
         return obs
 
     # ── step() — sync path ────────────────────────────────────────
