@@ -52,6 +52,16 @@ Every tech company has on-call SREs. When production breaks at 3 AM, an engineer
 
 This environment captures that exact reasoning challenge — with red herrings, cascading failures, and intermittent issues that genuinely fool frontier LLMs.
 
+### What This Tests That Static Benchmarks Don't
+
+| Capability | Static Benchmarks | This Environment |
+|-----------|------------------|-----------------|
+| **Incomplete information** | Full context given upfront | Agent sees alerts, not answers — must decide what to investigate |
+| **Causal reasoning** | Classification task | Must trace dependency chains and separate symptoms from root causes |
+| **Safety awareness** | No consequences | Restarting a healthy service incurs penalty (real SRE concern) |
+| **Red herring resistance** | No distractors | High-CPU cron jobs, autovacuum spikes, downstream cascades all mislead |
+| **Multi-step planning** | Single-turn | 8-20 tool calls across investigate → diagnose → remediate workflow |
+
 ---
 
 ## Quick Start
@@ -158,6 +168,16 @@ asyncio.run(main())
 | 4 | `hard_intermittent` | 🔴 Hard | auth-service clock skew + CPU red herring on order-service | 8 alerts. order-service has CRITICAL CPU alert with ERROR logs (it's just a cron job). Auth clock skew buried in 8% of logs |
 | 5 | `hard_network_partition` | 🔴 Hard | Network partition isolates payment-service from message-queue | 8 alerts. DB vacuum (red herring), auth token spike (red herring). Must identify network_partition and apply failover |
 
+### Why Each Scenario Is Hard
+
+| Task | What Fools LLMs | Required Skill |
+|------|-----------------|----------------|
+| `easy_oom_crash` | Nothing — baseline solvability check | Basic log reading |
+| `medium_cascade` | CRITICAL alert fires on api-gateway (symptom). Agent stops investigating before reaching database (root cause) | Dependency chain tracing |
+| `medium_disk_full` | Agent assumes total outage. Doesn't notice reads work + writes fail. Misses "disk_full" category | Asymmetric failure pattern recognition |
+| `hard_intermittent` | 92% CPU on order-service with ERROR logs looks like the crisis. Clock skew buried in 8% of auth logs | Signal-to-noise filtering, ignoring loud distractors |
+| `hard_network_partition` | DB autovacuum (18% error rate, 80% CPU) and auth token spike both look like root causes | Multi-hypothesis elimination, network vs app failure distinction |
+
 ---
 
 ## Reward Function
@@ -227,10 +247,11 @@ We benchmarked three models across all five tasks. The environment produces cons
 | **Gemma 4 26B** | 0.82 | 0.76 | 0.90 | 0.66 | 0.55 | **0.74** |
 
 **Key findings:**
-- All models ace the easy task but struggle on hard scenarios (0.02–0.82)
-- Different models fail in different ways — Kimi completely fails `hard_intermittent` (gives up without submitting), Gemma gets wrong root cause on `hard_network_partition`
-- The red herring mechanics genuinely fool frontier models
-- Score variance across tasks proves the grader differentiates behavior, not just model identity
+- All models ace the easy task but diverge sharply on hard scenarios (0.02–0.82)
+- **Why Kimi fails intermittent (0.02):** Fixates on order-service CPU alert, never reads auth logs, submits wrong diagnosis
+- **Why Gemma struggles network partition (0.55):** Correctly identifies network_partition but picks wrong service (message-queue instead of payment-service)
+- **Why Qwen excels (0.84 avg):** Consistently reads logs from 4+ services before diagnosing, uses dependency graph to reason about blast radius
+- Score variance across tasks proves the grader differentiates causal reasoning ability, not just model identity
 
 ### Reproduce
 

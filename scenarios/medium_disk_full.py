@@ -19,11 +19,16 @@ _ORDER_SERVICE_ERRORS = [
     {"level": "ERROR", "message": "order creation failed: could not persist to database"},
     {"level": "WARN", "message": "read-only mode activated — writes failing"},
     {"level": "INFO", "message": "order reads still functioning (cache + read replica)"},
+    {"level": "INFO", "message": "GET /orders/ORD-29840 — 200 OK (14ms, read replica)"},
+    {"level": "INFO", "message": "inventory lookup succeeded via read path"},
 ]
 
 _GATEWAY_ERRORS = [
     {"level": "ERROR", "message": "POST /api/v1/orders returning 500"},
-    {"level": "WARN", "message": "GET requests succeeding, POST/PUT failing"},
+    {"level": "ERROR", "message": "PUT /api/v1/orders/ORD-29840 returning 500"},
+    {"level": "INFO", "message": "GET /api/v1/orders/ORD-29840 returning 200 OK"},
+    {"level": "INFO", "message": "GET /api/v1/health returning 200 OK"},
+    {"level": "WARN", "message": "write endpoints failing, read endpoints healthy"},
 ]
 
 # Red herring: payment-service shows errors too (downstream of order-service)

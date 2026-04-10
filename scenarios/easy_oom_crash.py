@@ -7,15 +7,15 @@ from ..simulation.metrics_store import MetricsStore
 from ..simulation.alert_engine import AlertEngine
 
 
-# Error patterns — extremely obvious OOM with remediation hints
+# Error patterns — clear OOM signals but agent must infer remediation
 _ORDER_SERVICE_ERRORS = [
     {"level": "WARN", "message": "Memory usage at 85% — approaching heap limit"},
-    {"level": "WARN", "message": "GC overhead limit exceeded — long pause detected"},
+    {"level": "WARN", "message": "GC overhead limit exceeded — long pause (4200ms)"},
     {"level": "ERROR", "message": "Failed to allocate 256MB — heap space exhausted"},
     {"level": "FATAL", "message": "java.lang.OutOfMemoryError: Java heap space"},
     {"level": "FATAL", "message": "Process killed by OOM killer (exit code 137)"},
-    {"level": "ERROR", "message": "Service order-service is DOWN. Recommended action: restart_service to reclaim memory"},
-    {"level": "FATAL", "message": "MEMORY EXHAUSTION detected — service unrecoverable, requires restart"},
+    {"level": "ERROR", "message": "Service order-service terminated unexpectedly (signal 9)"},
+    {"level": "ERROR", "message": "All in-flight requests dropped — connection pool drained"},
 ]
 
 _GATEWAY_ERRORS = [
@@ -45,15 +45,15 @@ class EasyOOMCrash(ScenarioBase):
             "latency": 99999.0,
         })
 
-        # Alerts — clear, explicit, mention severity and recommended action
+        # Alerts — clear signals but agent must reason about cause + fix
         self._alerts.create_alert(
             "CRITICAL", "order-service",
-            "OOM killed (exit code 137) — memory_exhaustion confirmed. Severity: P2",
+            "Process terminated by OOM killer (exit code 137)",
             "oom_killer",
         )
         self._alerts.create_alert(
             "HIGH", "order-service",
-            "health check failed — service unresponsive. Recommend: restart_service",
+            "health check failed — service unresponsive after repeated retries",
             "health_check_failure",
         )
 
@@ -84,8 +84,7 @@ class EasyOOMCrash(ScenarioBase):
 
     def get_initial_observation_text(self) -> str:
         return (
-            "INCIDENT ALERT [P2]: order-service is DOWN due to memory exhaustion. "
-            "OOM killer triggered (exit code 137). API gateway reporting upstream "
-            "connection failures. Customer-facing order endpoints returning 503 errors. "
-            "Likely fix: restart the affected service to reclaim memory."
+            "INCIDENT ALERT: order-service is DOWN. OOM killer triggered (exit code 137). "
+            "API gateway reporting upstream connection failures. Customer-facing order "
+            "endpoints returning 503 errors. Multiple services affected."
         )

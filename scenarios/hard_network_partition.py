@@ -81,16 +81,16 @@ class HardNetworkPartition(ScenarioBase):
             "error_rate": 35.0,
             "latency": 3500.0,
         })
-        # database: latency elevated but NOT error — red herring
+        # database: latency AND error_rate elevated — convincing red herring
         self._metrics.set_metrics("database", {
             "latency": 340.0,
-            "error_rate": 0.5,
+            "error_rate": 18.0,
             "cpu": 80.0,
         })
-        # auth-service: looks busy but healthy
+        # auth-service: small errors to correlate with refresh spike
         self._metrics.set_metrics("auth-service", {
             "latency": 45.0,
-            "error_rate": 0.0,
+            "error_rate": 2.5,
         })
         self._metrics.set_metrics("api-gateway", {
             "error_rate": 20.0,

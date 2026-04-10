@@ -28,11 +28,13 @@ _GATEWAY_ERRORS = [
     {"level": "WARN", "message": "5xx error rate elevated: 52%"},
 ]
 
-# Red herring: cache also shows problems (but it's a symptom, not cause)
+# Red herring: cache shows problems that LOOK like a local issue
 _CACHE_ERRORS = [
     {"level": "ERROR", "message": "connection timeout to backend — retrying"},
     {"level": "WARN", "message": "cache miss rate elevated: 24%"},
     {"level": "ERROR", "message": "failed to refresh cache entry: upstream error"},
+    {"level": "ERROR", "message": "eviction rate: 45% (critical threshold 40%) — possible memory pressure"},
+    {"level": "WARN", "message": "cache hit ratio dropped to 0.62 (SLA threshold: 0.80)"},
 ]
 
 # Red herring: inventory-service shows timeouts too
@@ -97,8 +99,9 @@ class MediumCascade(ScenarioBase):
             "stock check failures — dependency timeout", "inventory_failures",
         )
         self._alerts.create_alert(
-            "HIGH", "cache",
-            "cache miss rate >20% — backend errors", "cache_miss_high",
+            "CRITICAL", "cache",
+            "cache eviction rate critical — possible memory pressure, consider scale_up",
+            "cache_eviction_critical",
         )
         self._alerts.create_alert(
             "WARN", "database",

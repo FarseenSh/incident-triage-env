@@ -20,8 +20,8 @@ _ORDER_SERVICE_RED_HERRING = [
     {"level": "ERROR", "message": "Response time degraded: p99=2400ms (threshold: 500ms)"},
     {"level": "WARN", "message": "Memory pressure: GC running every 200ms during batch processing"},
     {"level": "ERROR", "message": "Request queue backing up — 23 pending requests"},
-    {"level": "INFO", "message": "Starting scheduled batch job: nightly_inventory_sync"},
-    {"level": "INFO", "message": "Batch processing: 50000 records (this is a scheduled operation)"},
+    {"level": "INFO", "message": "Bulk operation started: processing 50000 records"},
+    {"level": "DEBUG", "message": "Batch thread pool utilization: 48/50 threads active"},
 ]
 
 # api-gateway — mix of symptoms, not all clearly auth-related
@@ -67,9 +67,10 @@ class HardIntermittent(ScenarioBase):
             "error_rate": 8.0,
             "latency": 2400.0,
         })
-        # auth-service: looks mostly healthy! Only subtle error_rate bump
+        # auth-service: error_rate visible as anomaly but not screaming
         self._metrics.set_metrics("auth-service", {
-            "error_rate": 6.0,
+            "error_rate": 12.0,
+            "latency": 180.0,
         })
         # api-gateway: elevated but not extreme
         self._metrics.set_metrics("api-gateway", {
