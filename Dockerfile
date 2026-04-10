@@ -1,9 +1,9 @@
-# Dockerfile (in project root, NOT server/)
+# Dockerfile — Incident Triage Environment (rebuilt 2026-04-11)
 ARG BASE_IMAGE=ghcr.io/meta-pytorch/openenv-base:latest
 FROM ${BASE_IMAGE} AS builder
 WORKDIR /app
 
-# Copy project as a proper Python package
+# Copy project — cache-bust: 2026-04-11T04:40
 COPY . /app/incident_triage_env
 WORKDIR /app/incident_triage_env
 
