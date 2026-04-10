@@ -174,6 +174,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
         self._current_scenario = None
         self._state = IncidentTriageState()
         self._seen_actions: set = set()
+        self._episode_done: bool = False
 
     # ── reset() ────────────────────────────────────────────────────
 
@@ -202,6 +203,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
             ground_truth_affected_services=gt.affected_services,
         )
         self._seen_actions = set()
+        self._episode_done = False
 
         initial_text = self._current_scenario.get_initial_observation_text()
         alert_summary = json.dumps(self._current_scenario.get_alerts()[:3], indent=2)
@@ -265,6 +267,15 @@ class IncidentTriageEnvironment(MCPEnvironment):
             if hasattr(obs, 'reward'):
                 obs.reward = _safe_reward(0.0)
             return obs
+
+        # Block steps after episode already returned done=True
+        if self._episode_done:
+            return IncidentTriageTerminalObservation(
+                done=True,
+                reward=0.0,
+                error="Episode already ended. Call reset() to start a new episode.",
+            )
+
         gt = self._current_scenario.get_ground_truth()
         step_reward = 0.0
 
@@ -331,6 +342,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
 
             # ── Terminal: submit_report ──
             if action.tool_name == "submit_report":
+                self._episode_done = True
                 terminal_reward = self._compute_terminal_reward()
                 raw_total = (
                     terminal_reward
@@ -380,6 +392,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
 
         # Max steps check
         if self._state.step_count >= MAX_STEPS:
+            self._episode_done = True
             terminal_reward = self._compute_terminal_reward()
             raw_total = (
                 terminal_reward + self._state.investigation_reward
