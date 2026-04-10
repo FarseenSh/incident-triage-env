@@ -103,6 +103,8 @@ class IncidentTriageEnvironment(MCPEnvironment):
             level = level.upper().strip()
             if level not in SEVERITY_LEVELS:
                 return f"Error: Invalid severity '{level}'. Must be one of: {SEVERITY_LEVELS}"
+            if self._state.severity_set:
+                return f"Severity already set to {self._state.severity_set}. Cannot change."
             self._state.agent_severity = level
             self._state.severity_set = level
             return f"Severity set to {level}"
@@ -118,6 +120,8 @@ class IncidentTriageEnvironment(MCPEnvironment):
                 return f"Error: Unknown service '{root_cause_service}'. Valid: {SERVICE_NAMES}"
             if root_cause_category not in ROOT_CAUSE_CATEGORIES:
                 return f"Error: Unknown category '{root_cause_category}'. Valid: {ROOT_CAUSE_CATEGORIES}"
+            if self._state.diagnosis_submitted:
+                return f"Diagnosis already submitted: {self._state.agent_root_cause_category} on {self._state.agent_root_cause_service}. Cannot change."
             self._state.agent_root_cause_service = root_cause_service
             self._state.agent_root_cause_category = root_cause_category
             self._state.diagnosis_submitted = True
@@ -134,6 +138,8 @@ class IncidentTriageEnvironment(MCPEnvironment):
                 return f"Error: Unknown action '{action}'. Valid: {REMEDIATION_ACTIONS}"
             if target_service not in SERVICE_NAMES:
                 return f"Error: Unknown service '{target_service}'. Valid: {SERVICE_NAMES}"
+            if self._state.remediation_submitted:
+                return f"Remediation already applied: {self._state.agent_remediation_action} on {self._state.agent_remediation_target}. Cannot change."
             self._state.agent_remediation_action = action
             self._state.agent_remediation_target = target_service
             self._state.remediation_submitted = True
