@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -30,7 +31,10 @@ from openenv.core.env_server.mcp_types import CallToolAction
 try:
     from client import IncidentTriageEnv
 except ImportError:
-    from incident_triage_env.client import IncidentTriageEnv
+    try:
+        from incident_triage_env.client import IncidentTriageEnv
+    except ImportError:
+        from openenv.core.mcp_client import MCPToolClient as IncidentTriageEnv
 
 # ─── Configuration ────────────────────────────────────────
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
@@ -89,18 +93,19 @@ def tools_to_openai_format(mcp_tools) -> List[dict]:
     for tool in mcp_tools:
         props = {}
         required = []
-        if tool.input_schema and "properties" in tool.input_schema:
-            for name, schema in tool.input_schema["properties"].items():
+        schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", {}) or {}
+        if isinstance(schema, dict) and "properties" in schema:
+            for name, field_schema in schema["properties"].items():
                 props[name] = {
-                    "type": schema.get("type", "string"),
-                    "description": schema.get("description", ""),
+                    "type": field_schema.get("type", "string"),
+                    "description": field_schema.get("description", ""),
                 }
-            required = tool.input_schema.get("required", [])
+            required = schema.get("required", [])
         result.append({
             "type": "function",
             "function": {
                 "name": tool.name,
-                "description": tool.description or "",
+                "description": getattr(tool, "description", "") or "",
                 "parameters": {"type": "object", "properties": props, "required": required},
             },
         })
@@ -114,40 +119,77 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
     rewards: List[float] = []
     steps_taken = 0
     success = False
-    score = 0.02  # Safe default — overridden in try/except
+    score = 0.02
 
     log_start(task=task_name, model=model_name)
 
     try:
+        # Reset the environment
         reset_result = await env.reset(task_name=task_name)
-        reset_obs = reset_result.observation if hasattr(reset_result, "observation") else reset_result
-        metadata = getattr(reset_obs, "metadata", None) or {}
-        briefing = metadata.get("briefing", f"An incident has been detected in task: {task_name}. Investigate immediately.")
-        alerts = metadata.get("initial_alerts", "")
 
-        # Bootstrap: if no alerts from reset, fetch them via tool call
-        if not alerts:
-            alert_result = await env.step(CallToolAction(tool_name="get_alerts", arguments={}))
-            alert_obs = alert_result.observation
-            alerts = str(alert_obs.result if hasattr(alert_obs, "result") else "")
-            reward = max(0.02, min(0.98, alert_obs.reward or 0.02))
-            done = alert_obs.done or False
-            rewards.append(reward)
-            steps_taken = 1
-            log_step(step=1, action="get_alerts()", reward=reward, done=done, error=None)
+        # Extract observation — handle both StepResult wrapper and raw Observation
+        if hasattr(reset_result, "observation"):
+            reset_obs = reset_result.observation
+        else:
+            reset_obs = reset_result
+
+        # Always fetch alerts as first step — most reliable way to get context
+        # (WebSocket client path may lose custom observation fields from reset)
+        alert_result = await env.step(CallToolAction(tool_name="get_alerts", arguments={}))
+        alert_obs = alert_result.observation if hasattr(alert_result, "observation") else alert_result
+        alerts_text = ""
+        if hasattr(alert_obs, "result"):
+            result = alert_obs.result
+            if isinstance(result, str):
+                alerts_text = result
+            elif isinstance(result, dict):
+                alerts_text = json.dumps(result, indent=2)
+            elif hasattr(result, "data"):
+                alerts_text = str(result.data)
+            elif hasattr(result, "content"):
+                # FastMCP wraps results in content list
+                content = result.content if isinstance(result.content, list) else [result.content]
+                texts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        texts.append(item.get("text", str(item)))
+                    elif hasattr(item, "text"):
+                        texts.append(item.text)
+                    else:
+                        texts.append(str(item))
+                alerts_text = "\n".join(texts)
+            else:
+                alerts_text = str(result)
+
+        reward = max(0.02, min(0.98, getattr(alert_obs, "reward", 0.02) or 0.02))
+        done = getattr(alert_obs, "done", False) or False
+        rewards.append(reward)
+        steps_taken = 1
+        log_step(step=1, action="get_alerts()", reward=reward, done=done, error=None)
+
+        # Extract briefing from alert text or use default
+        briefing = f"An incident has been detected in task: {task_name}. Investigate immediately."
+        if alerts_text:
+            try:
+                alert_data = json.loads(alerts_text)
+                if isinstance(alert_data, dict) and "briefing" in alert_data:
+                    briefing = alert_data["briefing"]
+                    alerts_text = json.dumps(alert_data.get("alerts", []), indent=2)
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"INCIDENT BRIEFING:\n{briefing}\n\nINITIAL ALERTS:\n{alerts}"},
+            {"role": "user", "content": f"INCIDENT BRIEFING:\n{briefing}\n\nINITIAL ALERTS:\n{alerts_text}"},
         ]
 
-        obs = reset_obs
+        obs = alert_obs
         step = steps_taken
         while not getattr(obs, "done", False) and step < MAX_STEPS:
             step += 1
-            temp = 1.0 if "kimi" in model_name.lower() else 0.1
+            temp = 0.1
 
-            # Retry on rate limits
+            # LLM call with retry on rate limits
             response = None
             for attempt in range(5):
                 try:
@@ -163,20 +205,28 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
                 except Exception as e:
                     if "429" in str(e) or "rate" in str(e).lower():
                         wait = 2 ** attempt * 3
+                        print(f"[DEBUG] Rate limited, waiting {wait}s", flush=True)
                         time.sleep(wait)
                     else:
+                        print(f"[DEBUG] LLM error: {e}", flush=True)
                         raise
 
             if response is None:
+                print("[DEBUG] LLM returned no response after retries", flush=True)
                 break
 
             msg = response.choices[0].message
             if not msg.tool_calls:
+                # No tool call — LLM may have finished or be confused
+                print(f"[DEBUG] No tool calls in response, finishing", flush=True)
                 break
 
             tc = msg.tool_calls[0]
             tool_name = tc.function.name
-            tool_args = json.loads(tc.function.arguments)
+            try:
+                tool_args = json.loads(tc.function.arguments)
+            except json.JSONDecodeError:
+                tool_args = {}
             tool_call_id = tc.id
 
             # Build assistant message
@@ -186,45 +236,71 @@ async def run_episode(env, llm_client, tools, task_name: str, model_name: str) -
                 "tool_calls": [{"id": tool_call_id, "type": "function",
                                "function": {"name": tool_name, "arguments": tc.function.arguments}}],
             }
-            reasoning = getattr(msg, "reasoning_content", None)
-            if reasoning:
-                assistant_msg["reasoning_content"] = reasoning
             messages.append(assistant_msg)
 
             # Execute action
             action_str = f"{tool_name}({json.dumps(tool_args)})"
-            action = CallToolAction(tool_name=tool_name, arguments=tool_args)
-            step_result = await env.step(action)
-            obs = step_result.observation
+            try:
+                action = CallToolAction(tool_name=tool_name, arguments=tool_args)
+                step_result = await env.step(action)
+                obs = step_result.observation if hasattr(step_result, "observation") else step_result
+            except Exception as e:
+                print(f"[DEBUG] Step error: {e}", flush=True)
+                obs = type("FakeObs", (), {"done": False, "reward": 0.02, "result": str(e)})()
 
-            reward = max(0.02, min(0.98, obs.reward if obs.reward is not None else 0.02))
-            done = obs.done or False
+            reward = max(0.02, min(0.98, getattr(obs, "reward", 0.02) or 0.02))
+            done = getattr(obs, "done", False) or False
             rewards.append(reward)
             steps_taken = step
 
             log_step(step=step, action=action_str, reward=reward, done=done, error=None)
 
-            if not obs.done:
-                result_text = str(obs.result if hasattr(obs, "result") else obs.metadata)
-                messages.append({"role": "tool", "tool_call_id": tool_call_id,
-                               "content": result_text[:2000]})
+            if not done:
+                # Extract result text for LLM context
+                result_text = ""
+                if hasattr(obs, "result"):
+                    result = obs.result
+                    if isinstance(result, str):
+                        result_text = result
+                    elif isinstance(result, dict):
+                        result_text = json.dumps(result, indent=2)
+                    elif hasattr(result, "data"):
+                        result_text = str(result.data)
+                    elif hasattr(result, "content"):
+                        content = result.content if isinstance(result.content, list) else [result.content]
+                        texts = []
+                        for item in content:
+                            if isinstance(item, dict):
+                                texts.append(item.get("text", str(item)))
+                            elif hasattr(item, "text"):
+                                texts.append(item.text)
+                            else:
+                                texts.append(str(item))
+                        result_text = "\n".join(texts)
+                    else:
+                        result_text = str(result)
+                elif hasattr(obs, "metadata") and obs.metadata:
+                    result_text = json.dumps(obs.metadata, indent=2)
+                else:
+                    result_text = "Action completed."
 
-        # Final score — always strictly in (0, 1)
-        final_reward = rewards[-1] if rewards else 0.01
+                messages.append({"role": "tool", "tool_call_id": tool_call_id,
+                               "content": result_text[:4000]})
+
+        # Final score
+        final_reward = rewards[-1] if rewards else 0.02
         score = max(0.02, min(0.98, final_reward))
         success = score >= 0.5
 
-        return {"task": task_name, "reward": score, "steps": steps_taken, "metadata": getattr(obs, "metadata", {})}
+        return {"task": task_name, "reward": score, "steps": steps_taken, "metadata": {}}
 
     except Exception as e:
-        # Even on crash, emit valid [END] with score in (0, 1)
+        print(f"[DEBUG] Episode error: {traceback.format_exc()}", flush=True)
         score = 0.02
         success = False
-        print(f"[DEBUG] Episode error: {e}", flush=True)
         return {"task": task_name, "reward": 0.02, "steps": steps_taken, "metadata": {}}
 
     finally:
-        # score is always set: either in try (line 213) or except (line 220)
         final_score = max(0.02, min(0.98, score))
         log_end(success=success, steps=steps_taken, score=final_score, rewards=rewards)
 
@@ -238,20 +314,26 @@ async def main_async(base_url: str):
         print("ERROR: Set HF_TOKEN or API_KEY environment variable", flush=True)
         sys.exit(1)
 
+    print(f"[DEBUG] Connecting to {base_url}", flush=True)
+    print(f"[DEBUG] Using LLM: {model} at {api_base}", flush=True)
+
     llm_client = OpenAI(base_url=api_base, api_key=api_key)
 
     try:
         async with IncidentTriageEnv(base_url=base_url) as env:
             mcp_tools = await env.list_tools()
             tools = tools_to_openai_format(mcp_tools)
+            print(f"[DEBUG] Discovered {len(tools)} tools", flush=True)
 
             results = []
             for task in TASKS:
                 try:
                     result = await run_episode(env, llm_client, tools, task, model)
                 except Exception as e:
-                    print(f"[DEBUG] Task {task} failed: {e}", flush=True)
+                    print(f"[DEBUG] Task {task} failed: {traceback.format_exc()}", flush=True)
                     result = {"task": task, "reward": 0.02, "steps": 0, "metadata": {}}
+                    log_start(task=task, model=model)
+                    log_end(success=False, steps=0, score=0.02, rewards=[0.02])
                 results.append(result)
 
             # Summary
@@ -264,7 +346,11 @@ async def main_async(base_url: str):
             avg = sum(r["reward"] for r in results) / len(results)
             print(f"  Average: {avg:.4f}", flush=True)
     except Exception as e:
-        print(f"[DEBUG] Connection failed: {e}", flush=True)
+        print(f"[DEBUG] Connection failed: {traceback.format_exc()}", flush=True)
+        # Emit valid [END] markers for all tasks so evaluator can parse output
+        for task in TASKS:
+            log_start(task=task, model=model)
+            log_end(success=False, steps=0, score=0.02, rewards=[0.02])
         sys.exit(1)
 
 
@@ -274,7 +360,6 @@ def main():
                         help="Environment server URL")
     args = parser.parse_args()
     asyncio.run(main_async(args.base_url))
-
 
 
 if __name__ == "__main__":
