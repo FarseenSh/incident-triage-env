@@ -202,7 +202,7 @@ asyncio.run(main())
 | Investigation depth (5+ services) | +0.03 | Replaces 3-service bonus |
 | Correct workflow order | +0.03 | Investigated before diagnosing |
 | Restart healthy service | -0.03 | Penalty for destructive action |
-| Diagnose before investigating | -0.02 | Skipped investigation phase |
+| Diagnose before investigating | -0.03 | Skipped investigation phase |
 | Repeat same action | -0.02 | Duplicate tool call with same args |
 | Max steps exhausted (20) | -0.10 | Episode forced termination |
 

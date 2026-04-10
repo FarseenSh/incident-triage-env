@@ -156,4 +156,4 @@ def test_workflow_violation(env):
     env.reset(task_name="easy_oom_crash")
     do_step(env, "diagnose", root_cause_service="order-service", root_cause_category="memory_exhaustion")
     assert env._state.workflow_violations >= 1
-    assert env._state.penalty <= -0.02
+    assert env._state.penalty <= -0.03

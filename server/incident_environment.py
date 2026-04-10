@@ -290,7 +290,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
                 and "check_metrics_called" in self._state.actions_taken
             )
             if tool_phase in ("DIAGNOSE", "REMEDIATE") and not has_investigated:
-                self._state.penalty -= 0.02
+                self._state.penalty -= 0.03
                 self._state.workflow_violations += 1
 
             # One-time workflow bonus: completed investigation before diagnosis
@@ -356,7 +356,7 @@ class IncidentTriageEnvironment(MCPEnvironment):
                         "root_cause": {"weight": 0.30, "exact": 0.30},
                         "remediation": {"weight": 0.30, "exact": 0.30, "partial": 0.10},
                         "efficiency": {"max": 0.07},
-                        "workflow": {"bonus": 0.03, "violation_penalty": -0.02},
+                        "workflow": {"bonus": 0.03, "violation_penalty": -0.03},
                     },
                     investigation_summary={
                         "services_checked": list(self._state.services_investigated),
@@ -465,14 +465,16 @@ class IncidentTriageEnvironment(MCPEnvironment):
             score += 0.1  # Partial: right action, wrong target
 
         # Enhancement 3: Efficiency bonus (capped at 0.07)
+        # Only awarded if agent followed proper workflow (investigated before diagnosing)
         eff = 0.0
-        if self._state.step_count <= 8:
-            eff += 0.05
-        elif self._state.step_count <= 12:
-            eff += 0.03
-        if len(self._state.services_investigated) <= 4:
-            eff += 0.02
-        eff = min(eff, 0.07)
+        if self._state.workflow_violations == 0:
+            if self._state.step_count <= 8:
+                eff += 0.05
+            elif self._state.step_count <= 12:
+                eff += 0.03
+            if len(self._state.services_investigated) <= 4:
+                eff += 0.02
+            eff = min(eff, 0.07)
         self._state.efficiency_bonus = eff
         score += eff
 
