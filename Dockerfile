@@ -30,6 +30,10 @@ FROM ${BASE_IMAGE}
 WORKDIR /app
 COPY --from=builder /app/incident_triage_env/.venv /app/.venv
 COPY --from=builder /app/incident_triage_env /app/incident_triage_env
+# Remove venv's installed copy of our package so PYTHONPATH source files are used
+RUN rm -rf /app/.venv/lib/python*/site-packages/incident_triage_env 2>/dev/null; \
+    rm -rf /app/.venv/lib/python*/site-packages/incident_triage_env-*.dist-info 2>/dev/null; \
+    true
 # Strip YAML frontmatter from README for the OpenEnv web interface
 RUN sed '1{/^---$/!q;};1,/^---$/d' /app/incident_triage_env/README.md > /app/README.md
 ENV PATH="/app/.venv/bin:$PATH"
